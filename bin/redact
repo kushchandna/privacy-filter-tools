@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/.env"
+  set +a
+fi
+
+IMAGE="${REDACT_IMAGE:-redact:latest}"
+CHECKPOINT_DIR="${REDACT_CHECKPOINT_DIR:-.data/checkpoints}"
+ADDITIONAL_DOCKER_RUN_ARGS="${REDACT_DOCKER_RUN_ARGS:-}"
+
+tty_flag=()
+[ -t 0 ] && tty_flag=(-t)
+
+env_flags=()
+[ -n "${HF_TOKEN:-}" ] && env_flags+=(-e HF_TOKEN)
+
+exec docker run --rm -i "${tty_flag[@]}" \
+  -v "$CHECKPOINT_DIR:/home/redact/.opf" \
+  "${env_flags[@]}" \
+  "$IMAGE" $ADDITIONAL_DOCKER_RUN_ARGS "$@"

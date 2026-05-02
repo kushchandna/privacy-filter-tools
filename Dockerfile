@@ -10,7 +10,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash opf
+    && useradd --create-home --shell /bin/bash redact
 
 ARG OPF_REPO_URL=https://github.com/openai/privacy-filter.git
 ARG OPF_REPO_REF=main
@@ -24,7 +24,7 @@ RUN git clone "$OPF_REPO_URL" privacy-filter \
 WORKDIR /opt/privacy-filter
 RUN pip install -e .
 
-USER opf
-WORKDIR /home/opf
+USER redact
+WORKDIR /home/redact
 
 ENTRYPOINT ["opf"]
