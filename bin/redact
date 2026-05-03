@@ -20,7 +20,39 @@ tty_flag=()
 env_flags=()
 [ -n "${HF_TOKEN:-}" ] && env_flags+=(-e HF_TOKEN)
 
+# Rewrite -f <host_path> args so the referenced file is mounted into the
+# container and opf sees the in-container path.
+opf_args=()
+file_mounts=()
+file_idx=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f)
+      if [ $# -lt 2 ]; then
+        echo "redact: -f requires a file path" >&2
+        exit 2
+      fi
+      host_path="$2"
+      if [ ! -f "$host_path" ]; then
+        echo "redact: file not found: $host_path" >&2
+        exit 2
+      fi
+      abs_path="$(cd "$(dirname "$host_path")" && pwd)/$(basename "$host_path")"
+      container_path="/redact-input/${file_idx}/$(basename "$host_path")"
+      file_mounts+=(-v "$abs_path:$container_path:ro")
+      opf_args+=(-f "$container_path")
+      file_idx=$((file_idx + 1))
+      shift 2
+      ;;
+    *)
+      opf_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
 exec docker run --rm -i "${tty_flag[@]}" \
   -v "$CHECKPOINT_DIR:/home/redact/.opf" \
+  "${file_mounts[@]}" \
   "${env_flags[@]}" \
-  "$IMAGE" $ADDITIONAL_DOCKER_RUN_ARGS "$@"
+  "$IMAGE" $ADDITIONAL_DOCKER_RUN_ARGS "${opf_args[@]}"
