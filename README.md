@@ -73,3 +73,26 @@ docker run -i -v ".data/checkpoints:/home/redact/.opf" redact -f input.txt
 ```bash
 docker run -v ".data/checkpoints:/home/redact/.opf" redact --device cpu "Alice was born on 1990-01-02."
 ```
+
+### Redact a non-text file (PDF, DOCX, etc.)
+
+When a non-text file is passed via `-f`, the entrypoint first converts it to Markdown using [docling](https://github.com/DS4SD/docling), then runs `opf` on the result.
+
+```bash
+redact -f report.pdf
+```
+
+This produces two files in the working directory:
+
+| File | Description |
+|------|-------------|
+| `report.md` | Intermediate Markdown converted by docling |
+| `report.redacted.md` | Final redacted output |
+
+Both files are retained by default. Pass `--cleanup` to delete the intermediate `report.md` after redaction:
+
+```bash
+redact -f report.pdf --cleanup
+```
+
+`report.redacted.md` is never deleted.

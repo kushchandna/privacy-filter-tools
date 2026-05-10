@@ -11,8 +11,17 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
 fi
 
 IMAGE="${REDACT_IMAGE:-redact:latest}"
-CHECKPOINT_DIR="${REDACT_CHECKPOINT_DIR:-.data/checkpoints}"
+CHECKPOINTS_DIR="${REDACT_CHECKPOINTS_DIR:-./.data/checkpoints}"
 ADDITIONAL_DOCKER_RUN_ARGS="${REDACT_DOCKER_RUN_ARGS:-}"
+
+# Resolve to absolute path so Docker treats it as a bind mount, not a named volume
+mkdir -p "$CHECKPOINTS_DIR"
+CHECKPOINTS_DIR="$(cd "$CHECKPOINTS_DIR" && pwd)"
+
+OPF_CHECKPOINTS_PATH="${CHECKPOINTS_DIR}/opf"
+DOCLING_ARTIFACTS_PATH="${CHECKPOINTS_DIR}/docling"
+RAPIDOCR_MODELS_PATH="${CHECKPOINTS_DIR}/rapidocr"
+mkdir -p "$OPF_CHECKPOINTS_PATH" "$DOCLING_ARTIFACTS_PATH" "$RAPIDOCR_MODELS_PATH"
 
 tty_flag=()
 [ -t 0 ] && tty_flag=(-t)
@@ -20,10 +29,13 @@ tty_flag=()
 env_flags=()
 [ -n "${HF_TOKEN:-}" ] && env_flags+=(-e HF_TOKEN)
 
-# Rewrite -f <host_path> args so the referenced file is mounted into the
-# container and opf sees the in-container path.
+# Rewrite -f <host_path> args so the parent directory is bind-mounted (rw)
+# into the container and opf sees the in-container path. The host directory
+# is also forwarded via REDACT_HOST_DIR_<idx> so the entrypoint can print
+# host-relative paths in its summary output.
 opf_args=()
 file_mounts=()
+host_dir_envs=()
 file_idx=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,9 +49,12 @@ while [ $# -gt 0 ]; do
         echo "redact: file not found: $host_path" >&2
         exit 2
       fi
-      abs_path="$(cd "$(dirname "$host_path")" && pwd)/$(basename "$host_path")"
-      container_path="/redact-input/${file_idx}/$(basename "$host_path")"
-      file_mounts+=(-v "$abs_path:$container_path:ro")
+      host_dir="$(cd "$(dirname "$host_path")" && pwd)"
+      file_name="$(basename "$host_path")"
+      container_dir="/redact-input/${file_idx}"
+      container_path="${container_dir}/${file_name}"
+      file_mounts+=(-v "${host_dir}:${container_dir}")
+      host_dir_envs+=(-e "REDACT_HOST_DIR_${file_idx}=${host_dir}")
       opf_args+=(-f "$container_path")
       file_idx=$((file_idx + 1))
       shift 2
@@ -51,8 +66,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-exec docker run --rm -i "${tty_flag[@]}" \
-  -v "$CHECKPOINT_DIR:/home/redact/.opf" \
-  "${file_mounts[@]}" \
-  "${env_flags[@]}" \
-  "$IMAGE" $ADDITIONAL_DOCKER_RUN_ARGS "${opf_args[@]}"
+exec docker run --rm -i "${tty_flag[@]+"${tty_flag[@]}"}" \
+  -v "$OPF_CHECKPOINTS_PATH:/home/redact/.opf" \
+  -v "$DOCLING_ARTIFACTS_PATH:/home/redact/.cache" \
+  -v "$RAPIDOCR_MODELS_PATH:/opt/venv/lib/python3.11/site-packages/rapidocr/models" \
+  "${file_mounts[@]+"${file_mounts[@]}"}" \
+  "${host_dir_envs[@]+"${host_dir_envs[@]}"}" \
+  "${env_flags[@]+"${env_flags[@]}"}" \
+  "$IMAGE" $ADDITIONAL_DOCKER_RUN_ARGS "${opf_args[@]+"${opf_args[@]}"}"
