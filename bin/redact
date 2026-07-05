@@ -11,7 +11,7 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
 fi
 
 IMAGE="${REDACT_IMAGE:-redact:latest}"
-CHECKPOINTS_DIR="${REDACT_CHECKPOINTS_DIR:-./.data/checkpoints}"
+CHECKPOINTS_DIR="${REDACT_CHECKPOINT_DIR:-./.data/checkpoints}"
 ADDITIONAL_DOCKER_RUN_ARGS="${REDACT_DOCKER_RUN_ARGS:-}"
 
 # Resolve to absolute path so Docker treats it as a bind mount, not a named volume
@@ -57,6 +57,31 @@ while [ $# -gt 0 ]; do
       host_dir_envs+=(-e "REDACT_HOST_DIR_${file_idx}=${host_dir}")
       opf_args+=(-f "$container_path")
       file_idx=$((file_idx + 1))
+      shift 2
+      ;;
+    -o|--output)
+      if [ $# -lt 2 ]; then
+        echo "redact: $1 requires a file path" >&2
+        exit 2
+      fi
+      host_out="$2"
+      host_out_dir="$(mkdir -p "$(dirname "$host_out")" && cd "$(dirname "$host_out")" && pwd)"
+      out_name="$(basename "$host_out")"
+      container_out_dir="/redact-output"
+      file_mounts+=(-v "${host_out_dir}:${container_out_dir}")
+      opf_args+=("$1" "${container_out_dir}/${out_name}")
+      shift 2
+      ;;
+    --checkpoint)
+      if [ $# -lt 2 ]; then
+        echo "redact: --checkpoint requires a path" >&2
+        exit 2
+      fi
+      host_ckpt="$2"
+      host_ckpt_abs="$(cd "$host_ckpt" && pwd)"
+      container_ckpt="/redact-checkpoint"
+      file_mounts+=(-v "${host_ckpt_abs}:${container_ckpt}:ro")
+      opf_args+=(--checkpoint "$container_ckpt")
       shift 2
       ;;
     *)
