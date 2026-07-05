@@ -12,16 +12,33 @@ fi
 
 IMAGE="${REDACT_IMAGE:-redact:latest}"
 CHECKPOINTS_DIR="${REDACT_CHECKPOINT_DIR:-./.data/checkpoints}"
-ADDITIONAL_DOCKER_RUN_ARGS="${REDACT_DOCKER_RUN_ARGS:-}"
+DOCKER_ARGS="${REDACT_DOCKER_ARGS:-}"   # true `docker run` flags, inserted before the image
+REDACT_ARGS="${REDACT_ARGS:-}"          # CLI args for redact-cli, appended after the image
 
-# Resolve to absolute path so Docker treats it as a bind mount, not a named volume
+# Exit with a usage error unless a flag was given its value.
+require_arg() {   # $1: flag, $2: args still on the command line ($#)
+  [ "$2" -ge 2 ] && return
+  echo "redact: $1 requires a value" >&2
+  exit 2
+}
+
+# Resolve an existing directory to an absolute path (so Docker bind-mounts it
+# rather than treating a relative path as a named volume).
+abspath() { cd "$1" && pwd; }
+
 mkdir -p "$CHECKPOINTS_DIR"
-CHECKPOINTS_DIR="$(cd "$CHECKPOINTS_DIR" && pwd)"
+CHECKPOINTS_DIR="$(abspath "$CHECKPOINTS_DIR")"
 
 OPF_CHECKPOINTS_PATH="${CHECKPOINTS_DIR}/opf"
 DOCLING_ARTIFACTS_PATH="${CHECKPOINTS_DIR}/docling"
 RAPIDOCR_MODELS_PATH="${CHECKPOINTS_DIR}/rapidocr"
 mkdir -p "$OPF_CHECKPOINTS_PATH" "$DOCLING_ARTIFACTS_PATH" "$RAPIDOCR_MODELS_PATH"
+
+# Where docling's RapidOCR keeps its ONNX weights inside the image. Read it from the image's
+# env (set via the RAPIDOCR_MODELS_DIR build ARG in the Dockerfile) so this path isn't hard-coded
+# to a specific Python version; fall back to the historical location if the image predates it.
+RAPIDOCR_CONTAINER_DIR="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" 2>/dev/null | sed -n 's/^RAPIDOCR_MODELS_DIR=//p' | head -n1)"
+RAPIDOCR_CONTAINER_DIR="${RAPIDOCR_CONTAINER_DIR:-/opt/venv/lib/python3.11/site-packages/rapidocr/models}"
 
 tty_flag=()
 [ -t 0 ] && tty_flag=(-t)
@@ -40,16 +57,13 @@ file_idx=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -f)
-      if [ $# -lt 2 ]; then
-        echo "redact: -f requires a file path" >&2
-        exit 2
-      fi
+      require_arg "$1" "$#"
       host_path="$2"
       if [ ! -f "$host_path" ]; then
         echo "redact: file not found: $host_path" >&2
         exit 2
       fi
-      host_dir="$(cd "$(dirname "$host_path")" && pwd)"
+      host_dir="$(abspath "$(dirname "$host_path")")"
       file_name="$(basename "$host_path")"
       container_dir="/redact-input/${file_idx}"
       container_path="${container_dir}/${file_name}"
@@ -60,12 +74,11 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     -o|--output)
-      if [ $# -lt 2 ]; then
-        echo "redact: $1 requires a file path" >&2
-        exit 2
-      fi
+      require_arg "$1" "$#"
       host_out="$2"
-      host_out_dir="$(mkdir -p "$(dirname "$host_out")" && cd "$(dirname "$host_out")" && pwd)"
+      out_parent="$(dirname "$host_out")"
+      mkdir -p "$out_parent"
+      host_out_dir="$(abspath "$out_parent")"
       out_name="$(basename "$host_out")"
       container_out_dir="/redact-output"
       file_mounts+=(-v "${host_out_dir}:${container_out_dir}")
@@ -73,12 +86,9 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --checkpoint)
-      if [ $# -lt 2 ]; then
-        echo "redact: --checkpoint requires a path" >&2
-        exit 2
-      fi
+      require_arg "$1" "$#"
       host_ckpt="$2"
-      host_ckpt_abs="$(cd "$host_ckpt" && pwd)"
+      host_ckpt_abs="$(abspath "$host_ckpt")"
       container_ckpt="/redact-checkpoint"
       file_mounts+=(-v "${host_ckpt_abs}:${container_ckpt}:ro")
       opf_args+=(--checkpoint "$container_ckpt")
@@ -94,8 +104,10 @@ done
 exec docker run --rm -i "${tty_flag[@]+"${tty_flag[@]}"}" \
   -v "$OPF_CHECKPOINTS_PATH:/home/redact/.opf" \
   -v "$DOCLING_ARTIFACTS_PATH:/home/redact/.cache" \
-  -v "$RAPIDOCR_MODELS_PATH:/opt/venv/lib/python3.11/site-packages/rapidocr/models" \
+  -v "$RAPIDOCR_MODELS_PATH:$RAPIDOCR_CONTAINER_DIR" \
   "${file_mounts[@]+"${file_mounts[@]}"}" \
   "${host_dir_envs[@]+"${host_dir_envs[@]}"}" \
   "${env_flags[@]+"${env_flags[@]}"}" \
-  "$IMAGE" $ADDITIONAL_DOCKER_RUN_ARGS "${opf_args[@]+"${opf_args[@]}"}"
+  $DOCKER_ARGS \
+  "$IMAGE" \
+  $REDACT_ARGS "${opf_args[@]+"${opf_args[@]}"}"

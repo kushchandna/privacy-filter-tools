@@ -1,8 +1,30 @@
 # privacy-filter-tools
 
-Docker packaging named `redact` for the [OpenAI Privacy Filter](https://github.com/openai/privacy-filter) (`opf`) CLI — a bidirectional token-classification model for PII detection and masking.
+`privacy-filter-tools` is a practical privacy-filter CLI for detecting and masking PII in both plain text and common document formats. It uses the [OpenAI Privacy Filter](https://github.com/openai/privacy-filter) (`opf`) model under the hood and packages everything needed for local or containerized use. Upstream is licensed under [Apache 2.0](https://github.com/openai/privacy-filter/blob/main/LICENSE).
 
-This repo builds a self-contained image that clones the upstream `privacy-filter` source, installs the CPU PyTorch wheel, and exposes `redact` as the container entrypoint. The model checkpoint is downloaded on first run from the `openai/privacy-filter` HuggingFace repo.
+This repo provides:
+
+- **`redact-cli`** — the core privacy-filter command-line tool: it auto-detects the device, converts non-text files (PDF, DOCX, …) to Markdown via [docling](https://github.com/DS4SD/docling), and runs `opf` over the result.
+- **`bin/redact`** — a Docker-first launcher for `redact-cli` that rewrites host paths into container paths, so you can run the same CLI without setting up Python locally.
+- A two-stage Docker image that keeps the runtime layer meaningfully smaller than a naïve single-stage build.
+
+## Quick start (Docker)
+
+```bash
+# 1. Build
+docker build -t redact .
+
+# 2. Add bin/ to PATH (or use ./bin/redact)
+export PATH="$PWD/bin:$PATH"
+
+# 3. Redact a string
+redact "My name is Alice and my email is alice@example.com"
+
+# 4. Redact a file (PDF, DOCX, etc.)
+redact -f contract.docx
+```
+
+The checkpoint (~2 GB) is downloaded from HuggingFace on the first run and cached in `.data/checkpoints/`. Subsequent runs reuse it.
 
 ## Build
 
@@ -10,89 +32,89 @@ This repo builds a self-contained image that clones the upstream `privacy-filter
 docker build -t redact .
 ```
 
-Optional build args:
+Build arguments:
 
-- `OPF_REPO_URL` — upstream repo URL (default `https://github.com/openai/privacy-filter.git`)
-- `OPF_REPO_REF` — branch, tag, or commit to check out (default `main`)
+| Argument | Default | Purpose |
+|---|---|---|
+| `OPF_REPO_URL` | `https://github.com/openai/privacy-filter.git` | Upstream repo URL |
+| `OPF_REPO_REF` | `f7f00ca7fb869683eb732c010299d901457f19c3` | Pinned upstream SHA; override to test a newer commit |
+| `TORCH_INDEX_URL` | `https://download.pytorch.org/whl/cpu` | PyTorch wheel index; pass a cu12x index for a CUDA image |
 
-## Run via `bin/redact` wrapper
+## `bin/redact` wrapper
 
-The repo ships a `bin/redact` shell script that wraps `docker run` so you can invoke `redact` like a native CLI. Add it to your `PATH`:
-
-```bash
-export PATH="$PWD/bin:$PATH"
-redact "My name is Alice"
-```
-
-The wrapper mounts a host directory at `/home/redact/.opf` for the checkpoint cache, forwards `HF_TOKEN` into the container if set, and auto-attaches a TTY when stdin is a terminal.
+The `bin/redact` script rewrites `-f <host_path>`, `-o <host_path>`, and `--checkpoint <host_path>` arguments into container-internal paths, mounts the relevant directories, and calls `docker run`. Use it exactly as you would use `redact-cli` directly.
 
 ### Configuration via `bin/.env`
 
-Copy the template and uncomment the variables you want:
-
 ```bash
 cp bin/.env.example bin/.env
+# edit bin/.env as needed
 ```
 
-`bin/.env` is sourced by `bin/opf` on every run. It is gitignored.
+`bin/.env` is sourced on every invocation. It is gitignored.
 
-| Variable              | Default              | Purpose                                                          |
-|-----------------------|----------------------|------------------------------------------------------------------|
-| `HF_TOKEN`            | —                    | HuggingFace token, forwarded into the container                  |
-| `REDACT_CHECKPOINT_DIR`  | `.data/checkpoints`  | Host directory mounted at `/home/redact/.opf` (checkpoint cache)    |
-| `REDACT_IMAGE`           | `redact:latest`         | Image tag to run                                                 |
-| `REDACT_DOCKER_RUN_ARGS` | —                    | Extra args appended to the `opf` command (e.g. `--device cpu`)   |
+| Variable | Default | Purpose |
+|---|---|---|
+| `HF_TOKEN` | — | HuggingFace token, forwarded into the container |
+| `REDACT_CHECKPOINT_DIR` | `.data/checkpoints` | Host directory where checkpoint caches are stored across runs |
+| `REDACT_IMAGE` | `redact:latest` | Image tag to run |
+| `REDACT_DOCKER_ARGS` | — | Extra flags for `docker run` itself, inserted **before** the image (e.g. `--gpus all`) |
+| `REDACT_ARGS` | — | Extra CLI arguments for `redact-cli` inside the container, appended **after** the image (e.g. `--device cpu`) |
 
-## Run via raw `docker run`
-
-Mount a host directory into the container's `~/.opf` so the downloaded checkpoint persists across runs:
+### Usage examples
 
 ```bash
-docker run -v ".data/checkpoints:/home/redact/.opf" redact "My name is Alice"
+# Redact a string
+redact "Alice was born on 1990-01-02."
+
+# Pipe stdin
+cat report.txt | redact
+
+# Redact a document (PDF, DOCX, PPTX, …)
+redact -f contract.docx
+
+# Custom output path
+redact -f contract.docx -o redacted/contract.md
+
+# Delete the intermediate .md after redaction
+redact -f contract.docx --cleanup
+
+# Overwrite existing output files
+redact -f contract.docx --force
+
+# Point at a local checkpoint
+redact -f contract.docx --checkpoint /path/to/my-checkpoint
 ```
 
-The first invocation downloads the checkpoint into `.data/checkpoints/privacy_filter/` on the host (a few GB). Subsequent runs reuse the cached weights.
+`--force` overrides the safety check that refuses to overwrite existing output or intermediate files. Without it, a second run on the same file exits 1 and names the file it would overwrite.
 
-### One-shot redaction
+## Native install (no Docker)
+
+Use this path on Apple Silicon with MPS acceleration, or when Docker is not available.
 
 ```bash
-docker run -v ".data/checkpoints:/home/redact/.opf" redact "Alice was born on 1990-01-02."
+pip install git+https://github.com/openai/privacy-filter@f7f00ca7fb869683eb732c010299d901457f19c3
+pip install docling
+pip install ./app
+
+redact-cli -f contract.docx
 ```
 
-### Redact a file via stdin
+`redact-cli` auto-detects the device: it defaults to `cpu` when CUDA is unavailable, or you can pass `--device mps` / `--device cuda` explicitly.
+
+## Hardware notes
+
+| Hardware | How to use |
+|---|---|
+| **CPU** | Default image; no extra flags needed |
+| **NVIDIA CUDA** | Build with `--build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121`, then run with `REDACT_DOCKER_ARGS="--gpus all"` (docker run flag) and `REDACT_ARGS="--device cuda"` (redact-cli flag) |
+| **Apple MPS** | Containers cannot access the Apple GPU; use the native install path with `--device mps` |
+
+## Smoke test
 
 ```bash
-cat input.txt | docker run -i -v ".data/checkpoints:/home/redact/.opf" redact
-```
-OR
-```bash
-docker run -i -v ".data/checkpoints:/home/redact/.opf" redact -f input.txt
+# Build the image first, then:
+python tests/smoke_test.py
 ```
 
-### Run `opf` on cpu
-```bash
-docker run -v ".data/checkpoints:/home/redact/.opf" redact --device cpu "Alice was born on 1990-01-02."
-```
-
-### Redact a non-text file (PDF, DOCX, etc.)
-
-When a non-text file is passed via `-f`, the entrypoint first converts it to Markdown using [docling](https://github.com/DS4SD/docling), then runs `opf` on the result.
-
-```bash
-redact -f report.pdf
-```
-
-This produces two files in the working directory:
-
-| File | Description |
-|------|-------------|
-| `report.md` | Intermediate Markdown converted by docling |
-| `report.redacted.md` | Final redacted output |
-
-Both files are retained by default. Pass `--cleanup` to delete the intermediate `report.md` after redaction:
-
-```bash
-redact -f report.pdf --cleanup
-```
-
-`report.redacted.md` is never deleted.
+The test generates a synthetic PII document (`tests/output/sample.docx`), redacts it, and verifies that opf placeholders are present, raw PII is absent, the overwrite guard works, and `--force --cleanup` leaves only the `.redacted.md`. Output files are gitignored and never committed.
