@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redact-cli"
+version = "0.1.0"
+description = "Native CLI wrapper for OpenAI privacy-filter workflows"
+requires-python = ">=3.11"
+
+[project.scripts]
+redact-cli = "redact_app.cli:main"
