@@ -11,6 +11,16 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
 fi
 
 IMAGE="${REDACT_IMAGE:-redact:latest}"
+
+# Fail loudly if docker can't be reached or the image is missing. Otherwise the
+# image inspect below (with its stderr suppressed) trips `set -e` and the script
+# exits silently — masking the real cause (daemon down, needs sudo, image not
+# built). Run the inspect once here so its error is visible.
+if ! docker image inspect "$IMAGE" >/dev/null; then
+  echo "redact: cannot inspect image '$IMAGE' (see docker error above)." >&2
+  echo "redact: build it with 'docker build -t $IMAGE .', set REDACT_IMAGE, or check docker access (you may need sudo)." >&2
+  exit 1
+fi
 CHECKPOINTS_DIR="${REDACT_CHECKPOINT_DIR:-./.data/checkpoints}"
 DOCKER_ARGS="${REDACT_DOCKER_ARGS:-}"   # true `docker run` flags, inserted before the image
 REDACT_ARGS="${REDACT_ARGS:-}"          # CLI args for redact-cli, appended after the image
@@ -37,7 +47,7 @@ mkdir -p "$OPF_CHECKPOINTS_PATH" "$DOCLING_ARTIFACTS_PATH" "$RAPIDOCR_MODELS_PAT
 # Where docling's RapidOCR keeps its ONNX weights inside the image. Read it from the image's
 # env (set via the RAPIDOCR_MODELS_DIR build ARG in the Dockerfile) so this path isn't hard-coded
 # to a specific Python version; fall back to the historical location if the image predates it.
-RAPIDOCR_CONTAINER_DIR="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" 2>/dev/null | sed -n 's/^RAPIDOCR_MODELS_DIR=//p' | head -n1)"
+RAPIDOCR_CONTAINER_DIR="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" 2>/dev/null | sed -n 's/^RAPIDOCR_MODELS_DIR=//p' | head -n1 || true)"
 RAPIDOCR_CONTAINER_DIR="${RAPIDOCR_CONTAINER_DIR:-/opt/venv/lib/python3.11/site-packages/rapidocr/models}"
 
 tty_flag=()
