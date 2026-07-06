@@ -82,6 +82,7 @@ while [ $# -gt 0 ]; do
       out_name="$(basename "$host_out")"
       container_out_dir="/redact-output"
       file_mounts+=(-v "${host_out_dir}:${container_out_dir}")
+      host_dir_envs+=(-e "REDACT_HOST_DIR_OUTPUT=${host_out_dir}")
       opf_args+=("$1" "${container_out_dir}/${out_name}")
       shift 2
       ;;

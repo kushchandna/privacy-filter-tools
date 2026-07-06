@@ -73,7 +73,10 @@ cat report.txt | redact
 # Redact a document (PDF, DOCX, PPTX, …)
 redact -f contract.docx
 
-# Custom output path
+# Redact several documents in a single container run
+redact -f contract.docx -f invoice.pdf -f notes.txt
+
+# Custom output path (single file only)
 redact -f contract.docx -o redacted/contract.md
 
 # Delete the intermediate .md after redaction
@@ -87,6 +90,8 @@ redact -f contract.docx --checkpoint /path/to/my-checkpoint
 ```
 
 `--force` overrides the safety check that refuses to overwrite existing output or intermediate files. Without it, a second run on the same file exits 1 and names the file it would overwrite.
+
+Pass `-f` multiple times to redact a batch in one container run. Each file is written to its own `*.redacted.*` output next to the source, so `-o` is only valid with a single `-f`. All outputs are checked up front — if any would overwrite an existing file (without `--force`), the whole batch aborts before writing anything. If one file fails to convert or redact, the rest still run and the command exits non-zero.
 
 ## Native install (no Docker)
 

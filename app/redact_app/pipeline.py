@@ -13,7 +13,7 @@ from redact_app.convert import convert_to_markdown, is_non_text_file
 @dataclass(frozen=True)
 class RunConfig:
     text: str | None
-    input_file: Path | None
+    input_files: list[Path]
     output_file: Path | None
     cleanup: bool
     force: bool
@@ -114,32 +114,35 @@ def _handle_opf_result(result: subprocess.CompletedProcess[str]) -> int:
     return result.returncode
 
 
-def run(config: RunConfig) -> int:
-    base_opf_args = _opf_args(config.device, config.checkpoint)
+def _container_to_host(path: Path) -> Path:
+    """Map an in-container output path back to its path on the host, for display.
 
-    if config.input_file is None:
-        if config.text is not None:
-            result = _run_opf([*base_opf_args, config.text])
-        else:
-            stdin_data = sys.stdin.read()
-            result = _run_opf(base_opf_args, stdin_data=stdin_data)
+    The Docker wrapper (bin/redact) bind-mounts each input's parent dir at
+    /redact-input/<idx> and the -o parent at /redact-output, forwarding the
+    matching host dir via REDACT_HOST_DIR_<idx> / REDACT_HOST_DIR_OUTPUT. Run
+    natively (no wrapper) these envs are absent and the path is already a host
+    path, so this is a no-op.
+    """
+    for name, host_dir in os.environ.items():
+        if not name.startswith("REDACT_HOST_DIR_"):
+            continue
+        key = name[len("REDACT_HOST_DIR_") :]
+        container_dir = "/redact-output" if key == "OUTPUT" else f"/redact-input/{key}"
+        try:
+            relative = path.relative_to(container_dir)
+        except ValueError:
+            continue
+        return Path(host_dir) / relative
+    return path
 
-        exit_code = _handle_opf_result(result)
-        if exit_code != 0:
-            return exit_code
-        sys.stdout.write(result.stdout)
-        return 0
 
-    input_file = config.input_file
-    non_text = is_non_text_file(input_file)
-    output_file = config.output_file or _default_output_path(input_file, non_text)
-    intermediate_file = _intermediate_markdown_path(input_file) if non_text else None
-
-    preflight_paths = [output_file]
-    if intermediate_file is not None:
-        preflight_paths.append(intermediate_file)
-    _preflight_targets(preflight_paths, config.force)
-
+def _redact_file(
+    input_file: Path,
+    output_file: Path,
+    intermediate_file: Path | None,
+    base_opf_args: list[str],
+    cleanup: bool,
+) -> int:
     file_for_opf = input_file
     if intermediate_file is not None:
         converted_markdown = convert_to_markdown(input_file)
@@ -152,9 +155,57 @@ def run(config: RunConfig) -> int:
         return exit_code
 
     _atomic_write(output_file, result.stdout)
-    print(f"Redacted file written to {output_file}.")
+    print(f"Redacted file written to {_container_to_host(output_file)}.")
 
-    if intermediate_file is not None and config.cleanup:
+    if intermediate_file is not None and cleanup:
         intermediate_file.unlink(missing_ok=True)
 
     return 0
+
+
+def run(config: RunConfig) -> int:
+    base_opf_args = _opf_args(config.device, config.checkpoint)
+
+    if not config.input_files:
+        if config.text is not None:
+            result = _run_opf([*base_opf_args, config.text])
+        else:
+            stdin_data = sys.stdin.read()
+            result = _run_opf(base_opf_args, stdin_data=stdin_data)
+
+        exit_code = _handle_opf_result(result)
+        if exit_code != 0:
+            return exit_code
+        sys.stdout.write(result.stdout)
+        return 0
+
+    # Plan every input's output/intermediate paths up front. config.output_file is
+    # only ever set for the single-file case (enforced by the CLI); with many inputs
+    # each file redacts to its default location next to the source.
+    plan: list[tuple[Path, Path, Path | None]] = []
+    for input_file in config.input_files:
+        non_text = is_non_text_file(input_file)
+        output_file = config.output_file or _default_output_path(input_file, non_text)
+        intermediate_file = _intermediate_markdown_path(input_file) if non_text else None
+        plan.append((input_file, output_file, intermediate_file))
+
+    # Preflight all targets before writing anything, so a collision on any file
+    # aborts the whole run instead of leaving a partially-redacted batch.
+    preflight_paths: list[Path] = []
+    for _, output_file, intermediate_file in plan:
+        preflight_paths.append(output_file)
+        if intermediate_file is not None:
+            preflight_paths.append(intermediate_file)
+    _preflight_targets(preflight_paths, config.force)
+
+    # Process every file; keep going after a failure so one bad input doesn't
+    # block the rest, and surface the first non-zero exit code.
+    exit_code = 0
+    for input_file, output_file, intermediate_file in plan:
+        code = _redact_file(
+            input_file, output_file, intermediate_file, base_opf_args, config.cleanup
+        )
+        if code != 0 and exit_code == 0:
+            exit_code = code
+
+    return exit_code

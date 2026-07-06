@@ -14,9 +14,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-f",
         "--file",
         action="append",
-        help="File input path; only one -f/--file is supported",
+        help="File input path; repeat -f/--file to redact multiple files in one run",
     )
-    parser.add_argument("-o", "--output", help="Output path for -f mode")
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output path; only valid with a single -f/--file",
+    )
     parser.add_argument("--cleanup", action="store_true", help="Delete intermediate .md")
     parser.add_argument(
         "--force",
@@ -33,8 +37,6 @@ def main() -> int:
     args = parser.parse_args()
 
     files = args.file or []
-    if len(files) > 1:
-        parser.error("multiple -f/--file arguments are not supported")
 
     if files and args.text is not None:
         parser.error("cannot use positional text and -f/--file together")
@@ -42,15 +44,18 @@ def main() -> int:
     if args.output and not files:
         parser.error("-o/--output requires -f/--file")
 
+    if args.output and len(files) > 1:
+        parser.error("-o/--output cannot be used with multiple -f/--file inputs")
+
     if not files and args.text is None and sys.stdin.isatty():
         parser.error("provide text, pipe stdin, or use -f/--file")
 
-    input_file = Path(files[0]).expanduser() if files else None
+    input_files = [Path(f).expanduser() for f in files]
     output_file = Path(args.output).expanduser() if args.output else None
 
     config = RunConfig(
         text=args.text,
-        input_file=input_file,
+        input_files=input_files,
         output_file=output_file,
         cleanup=args.cleanup,
         force=args.force,
